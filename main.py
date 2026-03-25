@@ -3,93 +3,128 @@ import asyncio
 import sqlite3
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiohttp import web
 
-# --- BAZA BILAN ISHLASH ---
-def init_db():
-    conn = sqlite3.connect('films.db')
-    cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS movies 
-                      (file_id TEXT, movie_code TEXT UNIQUE)''')
-    conn.commit()
-    conn.close()
+# --- SOZLAMALAR ---
+TOKEN = os.getenv("BOT_TOKEN")
 
-def add_movie(file_id, code):
-    try:
-        conn = sqlite3.connect('films.db')
-        cursor = conn.cursor()
-        cursor.execute("INSERT OR REPLACE INTO movies (file_id, movie_code) VALUES (?, ?)", (file_id, code))
-        conn.commit()
-        conn.close()
-        return True
-    except:
-        return False
+# Kanallar ID ro'yxati
+CHANNELS = ["-1003830955697", "-1003780100726", "-1003739050214"]
 
-def get_movie(code):
-    conn = sqlite3.connect('films.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT file_id FROM movies WHERE movie_code = ?", (code,))
-    result = cursor.fetchone()
-    conn.close()
-    return result[0] if result else None
+# Tugmalar uchun linklar
+CHANNEL_LINKS = [
+    ["📢 Kanal 1", "https://t.me/o_hamalov"],
+    ["📢 Kanal 2", "https://t.me/kanal123b"],
+    ["🔐 Kanal 3 (Maxfiy)", "https://t.me/+XekuwXtOBUdhY2I6"]
+]
+
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
+user_data = {}
+
+# --- OBUNANI TEKSHIRISH FUNKSIYASI ---
+async def check_sub(user_id):
+    for channel in CHANNELS:
+        try:
+            member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
+            if member.status in ["left", "kicked"]:
+                return False
+        except Exception:
+            return False
+    return True
 
 # --- RENDER UCHUN SERVER ---
-async def handle(request):
-    return web.Response(text="Bot ishlayapti!")
-
+async def handle(request): return web.Response(text="Bot is running!")
 async def run_server():
     app = web.Application()
     app.router.add_get("/", handle)
     runner = web.AppRunner(app)
     await runner.setup()
-    port = int(os.getenv("PORT", 8080))
-    site = web.TCPSite(runner, '0.0.0.0', port)
+    site = web.TCPSite(runner, '0.0.0.0', int(os.getenv("PORT", 8080)))
     await site.start()
 
-# --- BOT SOZLAMALARI ---
-TOKEN = os.getenv("BOT_TOKEN")
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
+# --- BAZA ---
+def init_db():
+    conn = sqlite3.connect('films.db')
+    conn.execute('CREATE TABLE IF NOT EXISTS movies (file_id TEXT, movie_code TEXT UNIQUE)')
+    conn.close()
 
-# Vaqtinchalik file_id ni saqlash uchun lug'at
-user_data = {}
+# --- HANDLERLAR ---
 
+# 1. Start komandasi (Ism olib tashlandi)
 @dp.message(Command("start"))
-async def start_cmd(message: types.Message):
-    await message.answer(f"Salom! Men kino botman.\nKino olish uchun kodini yuboring.\n\nYaratuvchi: Ogʻabek Hamalov")
+async def start(message: types.Message):
+    await message.answer("🎬 Salom! Men kino qidiruv botiman. Kino olish uchun uning kodini yuboring.")
 
-# Admin kino yuborganda
+# 2. Avtomatik a'zolikni tasdiqlash
+@dp.chat_join_request()
+async def auto_approve(chat_join_request: types.ChatJoinRequest):
+    await chat_join_request.approve()
+    try:
+        await bot.send_message(
+            chat_id=chat_join_request.from_user.id, 
+            text="✅ Kanallarga a'zo bo'lganingiz tasdiqlandi! Endi botga qaytib kino kodini yuborishingiz mumkin."
+        )
+    except:
+        pass
+
+# 3. Kino yuklash
 @dp.message(F.video)
-async def get_video_id(message: types.Message):
+async def get_video(message: types.Message):
     user_data[message.from_user.id] = message.video.file_id
-    await message.answer("Kino qabul qilindi! Endi kodni mana bunday yuboring:\n\n`kod:101` (xuddi shu ko'rinishda)", parse_mode="Markdown")
+    await message.answer("📁 Kino qabul qilindi! Endi kodni `kod:123` shaklida yuboring.")
 
-# Kodni bazaga saqlash
+# 4. Kodni saqlash
 @dp.message(F.text.startswith("kod:"))
-async def save_movie_handler(message: types.Message):
-    if message.from_user.id not in user_data:
-        await message.answer("Avval kino (video) yuboring!")
-        return
-    
-    movie_code = message.text.split(":")[1].strip()
-    file_id = user_data[message.from_user.id]
-    
-    if add_movie(file_id, movie_code):
-        await message.answer(f"✅ Tayyor! Kino {movie_code} kodi bilan saqlandi.")
-        del user_data[message.from_user.id]
-    else:
-        await message.answer("Xatolik yuz berdi. Balki bu kod banddir?")
-
-# Kinoni kod orqali olish
-@dp.message(F.text.isdigit())
-async def send_movie_handler(message: types.Message):
-    code = message.text
-    file_id = get_movie(code)
-    
+async def save_movie(message: types.Message):
+    code = message.text.split(":")[1].strip()
+    file_id = user_data.get(message.from_user.id)
     if file_id:
-        await message.answer_video(video=file_id, caption=f"Mana siz qidirgan kino (Kod: {code})")
+        conn = sqlite3.connect('films.db')
+        conn.execute("INSERT OR REPLACE INTO movies VALUES (?, ?)", (file_id, code))
+        conn.commit()
+        conn.close()
+        await message.answer(f"✅ Saqlandi! Kino kodi: {code}")
+        del user_data[message.from_user.id]
+
+# 5. Kino qidirish (Majburiy obuna bilan)
+@dp.message(F.text.isdigit())
+async def send_movie(message: types.Message):
+    is_subscribed = await check_sub(message.from_user.id)
+    
+    if not is_subscribed:
+        keyboard_buttons = []
+        for name, link in CHANNEL_LINKS:
+            keyboard_buttons.append([InlineKeyboardButton(text=name, url=link)])
+        
+        keyboard_buttons.append([InlineKeyboardButton(text="✅ Tekshirish", callback_data="check")])
+        btn = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+        
+        await message.answer(
+            "⚠️ **Kino ko'rish uchun avval kanallarimizga a'zo bo'lishingiz kerak!**", 
+            reply_markup=btn,
+            parse_mode="Markdown"
+        )
+        return
+
+    conn = sqlite3.connect('films.db')
+    res = conn.execute("SELECT file_id FROM movies WHERE movie_code = ?", (message.text,)).fetchone()
+    conn.close()
+    
+    if res:
+        await message.answer_video(video=res[0], caption=f"🍿 Kino kodi: {message.text}")
     else:
-        await message.answer("Afsus, bu kod bilan kino topilmadi. 😔")
+        await message.answer("😔 Bunday kodli kino hali bazaga qo'shilmagan.")
+
+# 6. Callback
+@dp.callback_query(F.data == "check")
+async def check_callback(call: types.CallbackQuery):
+    if await check_sub(call.from_user.id):
+        await call.message.delete()
+        await call.message.answer("✅ Rahmat! Endi kino kodini yuboravering.")
+    else:
+        await call.answer("❌ Hali hamma kanallarga a'zo bo'lmadingiz!", show_alert=True)
 
 async def main():
     init_db()
