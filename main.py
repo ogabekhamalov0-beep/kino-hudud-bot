@@ -1,12 +1,15 @@
 import os
 import asyncio
 import sqlite3
+import logging
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiohttp import web
 
+# Loglarni ko'rish (xatoni aniqlash uchun)
+logging.basicConfig(level=logging.INFO)
+
 # --- SOZLAMALAR ---
-# Yangi tokeningiz joylashtirildi
 TOKEN = "8739101953:AAHPd1mMYLvgul-9KKASbXHcYTcEXXEZUj8"
 PORT = int(os.environ.get("PORT", 8080))
 
@@ -14,17 +17,19 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 user_data = {}
 
-# --- BAZA ---
+# --- BAZANI TEKSHIRISH ---
 def init_db():
-    with sqlite3.connect('films.db') as conn:
-        conn.execute('CREATE TABLE IF NOT EXISTS movies (file_id TEXT, movie_code TEXT UNIQUE)')
-        conn.commit()
+    conn = sqlite3.connect('films.db')
+    cursor = conn.cursor()
+    cursor.execute('CREATE TABLE IF NOT EXISTS movies (file_id TEXT, movie_code TEXT UNIQUE)')
+    conn.commit()
+    conn.close()
 
-# --- SERVER (Render ishlashi uchun) ---
+# --- WEB SERVER (Render talabi) ---
 async def handle(request):
-    return web.Response(text="Bot is running!")
+    return web.Response(text="Bot is online!")
 
-async def start_webhook():
+async def start_server():
     app = web.Application()
     app.router.add_get("/", handle)
     runner = web.AppRunner(app)
@@ -32,41 +37,39 @@ async def start_webhook():
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
 
-# --- HANDLERLAR ---
+# --- BOT LOGIKASI ---
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
     await message.answer("🎬 Salom! Kino kodini yuboring.")
 
-# Kino yuklash
 @dp.message(F.video)
 async def get_video(message: types.Message):
     user_data[message.from_user.id] = message.video.file_id
-    await message.answer("📁 Video qabul qilindi. Kodni `kod:123` shaklida yuboring.")
+    await message.answer("📁 Video olindi! Endi kodni yozing (Masalan: kod:123)")
 
-# Kodni bazaga saqlash
 @dp.message(F.text.startswith("kod:"))
 async def save_movie(message: types.Message):
     try:
         code = message.text.split(":")[1].strip()
         file_id = user_data.get(message.from_user.id)
         if file_id:
-            with sqlite3.connect('films.db') as conn:
-                conn.execute("INSERT OR REPLACE INTO movies VALUES (?, ?)", (file_id, code))
-                conn.commit()
+            conn = sqlite3.connect('films.db')
+            conn.execute("INSERT OR REPLACE INTO movies VALUES (?, ?)", (file_id, code))
+            conn.commit()
+            conn.close()
             await message.answer(f"✅ Saqlandi! Kod: {code}")
-            if message.from_user.id in user_data:
-                del user_data[message.from_user.id]
+            user_data.pop(message.from_user.id, None)
         else:
             await message.answer("⚠️ Avval videoni yuboring!")
-    except Exception:
-        await message.answer("❌ Format xato. Misol: `kod:123`")
+    except:
+        await message.answer("❌ Xato! Kodni `kod:123` shaklida yozing.")
 
-# Kino qidirish
 @dp.message(F.text.isdigit())
 async def send_movie(message: types.Message):
-    with sqlite3.connect('films.db') as conn:
-        res = conn.execute("SELECT file_id FROM movies WHERE movie_code = ?", (message.text,)).fetchone()
+    conn = sqlite3.connect('films.db')
+    res = conn.execute("SELECT file_id FROM movies WHERE movie_code = ?", (message.text,)).fetchone()
+    conn.close()
     
     if res:
         await message.answer_video(video=res[0], caption=f"🍿 Kod: {message.text}")
@@ -75,9 +78,14 @@ async def send_movie(message: types.Message):
 
 async def main():
     init_db()
-    asyncio.create_task(start_webhook())
+    # Web serverni fonda ishga tushirish
+    asyncio.create_task(start_server())
+    # Pollingni boshlash
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
-    
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Bot stopped")
+        
